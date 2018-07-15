@@ -1,0 +1,3 @@
+apiVersion: stable.example.com/v1
+kind: SQSQueue
+projectName: sqs-queue-operator

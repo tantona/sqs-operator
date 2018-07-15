@@ -1,0 +1,13 @@
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: sqsqueues.stable.example.com
+spec:
+  group: stable.example.com
+  names:
+    kind: SQSQueue
+    listKind: SQSQueueList
+    plural: sqsqueues
+    singular: sqsqueue
+  scope: Namespaced
+  version: v1

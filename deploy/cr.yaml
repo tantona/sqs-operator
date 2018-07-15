@@ -1,0 +1,4 @@
+apiVersion: "stable.example.com/v1"
+kind: "SQSQueue"
+metadata:
+  name: "example"
