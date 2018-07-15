@@ -2,67 +2,168 @@ package stub
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"time"
 
-	"github.com/tantona/sqs-queue-operator/pkg/apis/stable/v1"
-
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/sqs"
+	"github.com/aws/aws-sdk-go/service/sqs/sqsiface"
 	"github.com/operator-framework/operator-sdk/pkg/sdk"
-	"github.com/sirupsen/logrus"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	log "github.com/sirupsen/logrus"
+	"github.com/tantona/sqs-operator/pkg/apis/stable/v1"
 )
+
+const annotationPrefix = "tantona.k8s.operator.sqs"
 
 func NewHandler() sdk.Handler {
 	return &Handler{}
 }
 
 type Handler struct {
-	// Fill me
+	SQSClient sqsiface.SQSAPI
 }
 
 func (h *Handler) Handle(ctx context.Context, event sdk.Event) error {
+	sess := session.Must(session.NewSession(&aws.Config{
+		Region: aws.String("us-east-1"),
+	}))
+
+	h.SQSClient = sqs.New(sess)
 	switch o := event.Object.(type) {
 	case *v1.SQSQueue:
-		err := sdk.Create(newbusyBoxPod(o))
-		if err != nil && !errors.IsAlreadyExists(err) {
-			logrus.Errorf("Failed to create busybox pod : %v", err)
+		sqsqueue := o
+		if event.Deleted {
+			return h.deleteSQSQueue(sqsqueue)
+		}
+
+		if err := h.createSQSQueue(sqsqueue); err != nil {
 			return err
 		}
+
+		if err := sdk.Update(sqsqueue); err != nil {
+			return err
+		}
+
+		return nil
 	}
 	return nil
 }
 
-// newbusyBoxPod demonstrates how to create a busybox pod
-func newbusyBoxPod(cr *v1.SQSQueue) *corev1.Pod {
-	labels := map[string]string{
-		"app": "busy-box",
+func (h *Handler) deleteSQSQueue(cr *v1.SQSQueue) error {
+	getQueueUrlResponse, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(cr.Spec.Name),
+	})
+
+	if err != nil {
+		return err
 	}
-	return &corev1.Pod{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Pod",
-			APIVersion: "v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "busy-box",
-			Namespace: cr.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				*metav1.NewControllerRef(cr, schema.GroupVersionKind{
-					Group:   v1.SchemeGroupVersion.Group,
-					Version: v1.SchemeGroupVersion.Version,
-					Kind:    "SQSQueue",
-				}),
-			},
-			Labels: labels,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
-				},
-			},
-		},
+
+	_, err = h.SQSClient.DeleteQueue(&sqs.DeleteQueueInput{
+		QueueUrl: getQueueUrlResponse.QueueUrl,
+	})
+
+	if err != nil {
+		return err
 	}
+
+	return nil
+}
+
+func buildAttributes(cr *v1.SQSQueue) map[string]*string {
+	attributes := map[string]*string{}
+	if cr.Spec.RedrivePolicy.MaxReceiveCount != "" {
+		b, _ := json.Marshal(cr.Spec.RedrivePolicy)
+		attributes["RedrivePolicy"] = aws.String(string(b))
+	}
+
+	if cr.Spec.VisibilityTimeout != "" {
+		attributes["VisibilityTimeout"] = aws.String(cr.Spec.VisibilityTimeout)
+	}
+
+	if cr.Spec.MaximumMessageSize != "" {
+		attributes["MaximumMessageSize"] = aws.String(cr.Spec.MaximumMessageSize)
+	}
+
+	if cr.Spec.MessageRetentionPeriod != "" {
+		attributes["MessageRetentionPeriod"] = aws.String(cr.Spec.MessageRetentionPeriod)
+	}
+
+	if cr.Spec.DelaySeconds != "" {
+		attributes["DelaySeconds"] = aws.String(cr.Spec.DelaySeconds)
+	}
+
+	if cr.Spec.ReceiveMessageWaitTimeSeconds != "" {
+		attributes["ReceiveMessageWaitTimeSeconds"] = aws.String(cr.Spec.ReceiveMessageWaitTimeSeconds)
+	}
+
+	if cr.Spec.FifoQueue {
+		attributes["FifoQueue"] = aws.String("true")
+	}
+
+	return attributes
+}
+
+func (h *Handler) createSQSQueue(cr *v1.SQSQueue) error {
+	attributes := buildAttributes(cr)
+
+	createQueueResponse, err := h.SQSClient.CreateQueue(&sqs.CreateQueueInput{
+		QueueName:  aws.String(cr.Spec.Name),
+		Attributes: attributes,
+	})
+
+	if err != nil {
+		if awsErr, ok := err.(awserr.Error); ok {
+			if awsErr.Code() == sqs.ErrCodeQueueDeletedRecently {
+				log.Info("queue was deleted recently attempting to create in 60 seconds")
+				time.Sleep(60 * time.Second)
+				return h.createSQSQueue(cr)
+			}
+
+			if awsErr.Code() == sqs.ErrCodeQueueNameExists {
+				log.Info("queue exists updating attributes")
+				return h.updateSQSQueueAttributes(cr)
+			}
+		}
+		return err
+
+	}
+
+	log.Info("sqs queue created: %s", cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)])
+	return h.setSQSQueueAnnotations(createQueueResponse.QueueUrl, cr)
+}
+
+func (h *Handler) updateSQSQueueAttributes(cr *v1.SQSQueue) error {
+	r, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(cr.Spec.Name),
+	})
+	if err != nil {
+		return err
+	}
+
+	if _, err := h.SQSClient.SetQueueAttributes(&sqs.SetQueueAttributesInput{
+		QueueUrl:   aws.String(cr.Annotations[fmt.Sprintf("%s/QueueUrl", annotationPrefix)]),
+		Attributes: buildAttributes(cr),
+	}); err != nil {
+		return err
+	}
+
+	log.Info("sqs queue updated: %s", cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)])
+	return h.setSQSQueueAnnotations(r.QueueUrl, cr)
+}
+
+func (h *Handler) setSQSQueueAnnotations(queueUrl *string, cr *v1.SQSQueue) error {
+	getQueueAttributesResponse, err := h.SQSClient.GetQueueAttributes(&sqs.GetQueueAttributesInput{
+		QueueUrl:       queueUrl,
+		AttributeNames: []*string{aws.String("QueueArn")},
+	})
+	if err != nil {
+		return err
+	}
+
+	cr.Annotations[fmt.Sprintf("%s/QueueUrl", annotationPrefix)] = *queueUrl
+	cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)] = *getQueueAttributesResponse.Attributes["QueueArn"]
+	return nil
 }

@@ -1,3 +1,3 @@
 // +k8s:deepcopy-gen=package
-// +groupName=stable.example.com
+// +groupName=tantona.github.com
 package v1

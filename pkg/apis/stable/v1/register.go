@@ -10,7 +10,7 @@ import (
 
 const (
 	version   = "v1"
-	groupName = "stable.example.com"
+	groupName = "tantona.github.com"
 )
 
 var (

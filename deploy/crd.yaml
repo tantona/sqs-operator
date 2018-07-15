@@ -1,13 +1,15 @@
 apiVersion: apiextensions.k8s.io/v1beta1
 kind: CustomResourceDefinition
 metadata:
-  name: sqsqueues.stable.example.com
+  name: sqsqueues.tantona.github.com
 spec:
-  group: stable.example.com
+  group: tantona.github.com
   names:
     kind: SQSQueue
     listKind: SQSQueueList
     plural: sqsqueues
     singular: sqsqueue
+    shortNames:
+    - sqs
   scope: Namespaced
   version: v1

@@ -1,4 +1,19 @@
-apiVersion: "stable.example.com/v1"
+apiVersion: "tantona.github.com/v1"
 kind: "SQSQueue"
 metadata:
-  name: "example"
+  name: foobar-test-1
+spec:
+  name: foobar-test-1
+  visibilityTimeout: "11202"
+  maximumMessageSize: "2028"
+  messageRetentionPeriod: "259200"
+  delaySeconds: "322"
+  receiveMessageWaitTimeSeconds: "15"
+  redrivePolicy: 
+    maxReceiveCount: "20"
+    deadLetterTargetArn: arn:aws:sqs:us-east-1:960199038060:foobar1234
+  fifoQueue: false
+  # contentBasedDeduplication: true
+  # kmsMasterKeyId: "some-key"
+  # kmsDataKeyReusePeriodSeconds: "65"
+
