@@ -5,15 +5,31 @@ This operator allows you to manage AWS SQS queues with CustomResourceDefinitions
 
 ## Getting Started
 
-```
-dep ensure -v
-docker build -t tantona/sqs-operator .
-docker push tantona/sqs-operator:latest
+IAM policy 
 
+```
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "sqs:*"
+            ],
+            "Resource": [
+                "*"
+            ]
+        }
+    ]
+}
+```
+
+Create Resources
+```
 kubectl apply -f ./deploy/crd.yaml
 kubectl apply -f ./deploy/operator.yaml
 
-kubectl apply -f ./deploy/cr.yaml
+kubectl apply -f ./deploy/queue.yaml
 ```
 
 ## TODO

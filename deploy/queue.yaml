@@ -9,11 +9,8 @@ spec:
   messageRetentionPeriod: "259200"
   delaySeconds: "322"
   receiveMessageWaitTimeSeconds: "15"
-  redrivePolicy: 
-    maxReceiveCount: "20"
-    deadLetterTargetArn: arn:aws:sqs:us-east-1:960199038060:foobar1234
+  # redrivePolicy: 
+  #   maxReceiveCount: "20"
+  #   deadLetterTargetArn: arn:aws:sqs:us-east-1:111111111111:foobar1234
   fifoQueue: false
-  # contentBasedDeduplication: true
-  # kmsMasterKeyId: "some-key"
-  # kmsDataKeyReusePeriodSeconds: "65"
 
