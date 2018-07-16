@@ -21,23 +21,9 @@ type SQSQueue struct {
 	Status            SQSQueueStatus `json:"status,omitempty"`
 }
 
-type RedrivePolicy struct {
-	MaxReceiveCount     string `json:"maxReceiveCount"`
-	DeadLetterTargetArn string `json:"deadLetterTargetArn"`
-}
-
 type SQSQueueSpec struct {
-	Name                          string        `json:"name"`
-	VisibilityTimeout             string        `json:"visibilityTimeout"`
-	MaximumMessageSize            string        `json:"maximumMessageSize"`
-	MessageRetentionPeriod        string        `json:"messageRetentionPeriod"`
-	DelaySeconds                  string        `json:"delaySeconds"`
-	ReceiveMessageWaitTimeSeconds string        `json:"receiveMessageWaitTimeSeconds"`
-	RedrivePolicy                 RedrivePolicy `json:"redrivePolicy"`
-	FifoQueue                     bool          `json:"fifoQueue"`
-	// ContentBasedDeduplication     bool          `json:"contentBasedDeduplication"`
-	// KmsMasterKeyID                string        `json:"kmsMasterKeyId"`
-	// KmsDataKeyReusePeriodSeconds  string        `json:"kmsDataKeyReusePeriodSeconds"`
+	Name       string            `json:"name"`
+	Attributes map[string]string `json:"attributes"`
 }
 type SQSQueueStatus struct {
 	// Fill me

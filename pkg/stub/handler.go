@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -27,8 +30,10 @@ type Handler struct {
 }
 
 func (h *Handler) Handle(ctx context.Context, event sdk.Event) error {
+	log.SetLevel(log.DebugLevel)
+
 	sess := session.Must(session.NewSession(&aws.Config{
-		Region: aws.String("us-east-1"),
+		Region: aws.String(os.Getenv("AWS_REGION")),
 	}))
 
 	h.SQSClient = sqs.New(sess)
@@ -39,21 +44,46 @@ func (h *Handler) Handle(ctx context.Context, event sdk.Event) error {
 			return h.deleteSQSQueue(sqsqueue)
 		}
 
-		if err := h.createSQSQueue(sqsqueue); err != nil {
+		if !h.queueExists(sqsqueue) {
+			if err := h.createSQSQueue(sqsqueue); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		hasChanged, err := h.queueHasChanged(sqsqueue)
+		if err != nil {
 			return err
+		}
+
+		if hasChanged {
+			if err := h.updateSQSQueue(sqsqueue); err != nil {
+				return err
+			}
 		}
 
 		if err := sdk.Update(sqsqueue); err != nil {
 			return err
 		}
-
-		return nil
 	}
 	return nil
 }
 
+func (h *Handler) queueExists(cr *v1.SQSQueue) bool {
+	_, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(cr.Spec.Name),
+	})
+	if awsErr, ok := err.(awserr.Error); ok {
+		if awsErr.Code() == sqs.ErrCodeQueueDoesNotExist {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (h *Handler) deleteSQSQueue(cr *v1.SQSQueue) error {
-	getQueueUrlResponse, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+	getQueueURLResponse, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
 		QueueName: aws.String(cr.Spec.Name),
 	})
 
@@ -62,7 +92,7 @@ func (h *Handler) deleteSQSQueue(cr *v1.SQSQueue) error {
 	}
 
 	_, err = h.SQSClient.DeleteQueue(&sqs.DeleteQueueInput{
-		QueueUrl: getQueueUrlResponse.QueueUrl,
+		QueueUrl: getQueueURLResponse.QueueUrl,
 	})
 
 	if err != nil {
@@ -72,46 +102,10 @@ func (h *Handler) deleteSQSQueue(cr *v1.SQSQueue) error {
 	return nil
 }
 
-func buildAttributes(cr *v1.SQSQueue) map[string]*string {
-	attributes := map[string]*string{}
-	if cr.Spec.RedrivePolicy.MaxReceiveCount != "" {
-		b, _ := json.Marshal(cr.Spec.RedrivePolicy)
-		attributes["RedrivePolicy"] = aws.String(string(b))
-	}
-
-	if cr.Spec.VisibilityTimeout != "" {
-		attributes["VisibilityTimeout"] = aws.String(cr.Spec.VisibilityTimeout)
-	}
-
-	if cr.Spec.MaximumMessageSize != "" {
-		attributes["MaximumMessageSize"] = aws.String(cr.Spec.MaximumMessageSize)
-	}
-
-	if cr.Spec.MessageRetentionPeriod != "" {
-		attributes["MessageRetentionPeriod"] = aws.String(cr.Spec.MessageRetentionPeriod)
-	}
-
-	if cr.Spec.DelaySeconds != "" {
-		attributes["DelaySeconds"] = aws.String(cr.Spec.DelaySeconds)
-	}
-
-	if cr.Spec.ReceiveMessageWaitTimeSeconds != "" {
-		attributes["ReceiveMessageWaitTimeSeconds"] = aws.String(cr.Spec.ReceiveMessageWaitTimeSeconds)
-	}
-
-	if cr.Spec.FifoQueue {
-		attributes["FifoQueue"] = aws.String("true")
-	}
-
-	return attributes
-}
-
 func (h *Handler) createSQSQueue(cr *v1.SQSQueue) error {
-	attributes := buildAttributes(cr)
-
 	createQueueResponse, err := h.SQSClient.CreateQueue(&sqs.CreateQueueInput{
 		QueueName:  aws.String(cr.Spec.Name),
-		Attributes: attributes,
+		Attributes: buildAttributes(cr),
 	})
 
 	if err != nil {
@@ -121,21 +115,16 @@ func (h *Handler) createSQSQueue(cr *v1.SQSQueue) error {
 				time.Sleep(60 * time.Second)
 				return h.createSQSQueue(cr)
 			}
-
-			if awsErr.Code() == sqs.ErrCodeQueueNameExists {
-				log.Info("queue exists updating attributes")
-				return h.updateSQSQueueAttributes(cr)
-			}
 		}
 		return err
 
 	}
 
-	log.Info("sqs queue created: %s", cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)])
-	return h.setSQSQueueAnnotations(createQueueResponse.QueueUrl, cr)
+	log.Infof("sqs queue created: %s", *createQueueResponse.QueueUrl)
+	return h.setSQSQueueAnnotations(cr)
 }
 
-func (h *Handler) updateSQSQueueAttributes(cr *v1.SQSQueue) error {
+func (h *Handler) updateSQSQueue(cr *v1.SQSQueue) error {
 	r, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
 		QueueName: aws.String(cr.Spec.Name),
 	})
@@ -144,26 +133,102 @@ func (h *Handler) updateSQSQueueAttributes(cr *v1.SQSQueue) error {
 	}
 
 	if _, err := h.SQSClient.SetQueueAttributes(&sqs.SetQueueAttributesInput{
-		QueueUrl:   aws.String(cr.Annotations[fmt.Sprintf("%s/QueueUrl", annotationPrefix)]),
+		QueueUrl:   r.QueueUrl,
 		Attributes: buildAttributes(cr),
 	}); err != nil {
 		return err
 	}
 
-	log.Info("sqs queue updated: %s", cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)])
-	return h.setSQSQueueAnnotations(r.QueueUrl, cr)
+	log.Infof("sqs queue updated: %s", *r.QueueUrl)
+	return h.setSQSQueueAnnotations(cr)
 }
 
-func (h *Handler) setSQSQueueAnnotations(queueUrl *string, cr *v1.SQSQueue) error {
-	getQueueAttributesResponse, err := h.SQSClient.GetQueueAttributes(&sqs.GetQueueAttributesInput{
-		QueueUrl:       queueUrl,
-		AttributeNames: []*string{aws.String("QueueArn")},
+func (h *Handler) getQueueAttributes(cr *v1.SQSQueue) (map[string]string, error) {
+	attrs := map[string]string{}
+	getQueueURLResponse, err := h.SQSClient.GetQueueUrl(&sqs.GetQueueUrlInput{
+		QueueName: aws.String(cr.Spec.Name),
 	})
+
+	if err != nil {
+		return attrs, err
+	}
+
+	attrs["QueueUrl"] = *getQueueURLResponse.QueueUrl
+
+	getQueueAttributesResponse, err := h.SQSClient.GetQueueAttributes(&sqs.GetQueueAttributesInput{
+		QueueUrl:       getQueueURLResponse.QueueUrl,
+		AttributeNames: []*string{aws.String("All")},
+	})
+	if err != nil {
+		return attrs, err
+	}
+
+	for k, v := range getQueueAttributesResponse.Attributes {
+		attrs[k] = *v
+	}
+
+	return attrs, nil
+}
+
+func (h *Handler) queueHasChanged(cr *v1.SQSQueue) (bool, error) {
+	attrs, err := h.getQueueAttributes(cr)
+	if err != nil {
+		return false, err
+	}
+	stringAttrs := []string{"VisibilityTimeout", "MaximumMessageSize", "MessageRetentionPeriod", "DelaySeconds", "ReceiveMessageWaitTimeSeconds"}
+	for _, key := range stringAttrs {
+		if cr.Spec.Attributes[key] != attrs[key] {
+			log.Debugf("%s: %s != %s", key, cr.Spec.Attributes[key], attrs[key])
+			return true, nil
+		}
+	}
+
+	equal, err := compareJSON(cr.Spec.Attributes["RedrivePolicy"], attrs["RedrivePolicy"])
+	if !equal {
+		log.Debugf("RedrivePolicy not equal %s %s", stripWhitespace(cr.Spec.Attributes["RedrivePolicy"]), attrs["RedrivePolicy"])
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (h *Handler) setSQSQueueAnnotations(cr *v1.SQSQueue) error {
+	attributes, err := h.getQueueAttributes(cr)
 	if err != nil {
 		return err
 	}
 
-	cr.Annotations[fmt.Sprintf("%s/QueueUrl", annotationPrefix)] = *queueUrl
-	cr.Annotations[fmt.Sprintf("%s/QueueArn", annotationPrefix)] = *getQueueAttributesResponse.Attributes["QueueArn"]
+	for key := range attributes {
+		cr.Annotations[fmt.Sprintf("%s/%s", annotationPrefix, key)] = attributes[key]
+	}
 	return nil
+}
+
+func buildAttributes(cr *v1.SQSQueue) map[string]*string {
+	attributes := map[string]*string{}
+	for k, v := range cr.Spec.Attributes {
+		attributes[k] = aws.String(stripWhitespace(v))
+	}
+	return attributes
+}
+
+func compareJSON(s1, s2 string) (bool, error) {
+	var o1 interface{}
+	var o2 interface{}
+
+	var err error
+	err = json.Unmarshal([]byte(stripWhitespace(s1)), &o1)
+	if err != nil {
+		return false, fmt.Errorf("Error mashalling string 1 :: %v", err)
+	}
+	err = json.Unmarshal([]byte(stripWhitespace(s2)), &o2)
+	if err != nil {
+		return false, fmt.Errorf("Error mashalling string 2 :: %v", err)
+	}
+
+	return reflect.DeepEqual(o1, o2), nil
+}
+
+func stripWhitespace(s string) string {
+	return strings.Replace(strings.Replace(s, "\n", "", -1), " ", "", -1)
 }

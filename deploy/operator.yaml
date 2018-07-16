@@ -22,6 +22,8 @@ spec:
           - sqs-operator
           imagePullPolicy: Always
           env:
+            - name: AWS_REGION
+              value: us-east-1
             - name: WATCH_NAMESPACE
               valueFrom:
                 fieldRef:
