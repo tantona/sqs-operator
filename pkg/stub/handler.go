@@ -60,12 +60,10 @@ func (h *Handler) Handle(ctx context.Context, event sdk.Event) error {
 			if err := h.updateSQSQueue(sqsqueue); err != nil {
 				return err
 			}
-		}
-
-		if err := sdk.Update(sqsqueue); err != nil {
-			return err
+			return nil
 		}
 	}
+
 	return nil
 }
 
@@ -200,6 +198,10 @@ func (h *Handler) setSQSQueueAnnotations(cr *v1.SQSQueue) error {
 
 	for key := range attributes {
 		cr.Annotations[fmt.Sprintf("%s/%s", annotationPrefix, key)] = attributes[key]
+	}
+
+	if err := sdk.Update(cr); err != nil {
+		return err
 	}
 	return nil
 }
